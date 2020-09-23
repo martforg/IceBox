@@ -37,4 +37,15 @@ namespace IB
     // returns whether or not there are more messages to consume.
     IB_API bool consumeMessageQueue(PlatformMessage *message);
     IB_API void sendQuitMessage();
+
+    // Allocation API
+    uint32_t memoryPageSize();
+    IB_API void* reserveMemoryPage();
+    // Commits reserved memory.
+    IB_API void commitMemoryPage(void* page);
+    // Returns the page to reserve state.
+    IB_API void decommitMemoryPage(void* page);
+    // Releases reserved memory.
+    IB_API void freeMemoryPage(void* page);
+
 } // namespace IB

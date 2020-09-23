@@ -2,6 +2,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <sysinfoapi.h>
+
 #include <assert.h>
 #include <stdint.h>
 
@@ -127,6 +129,38 @@ namespace IB
     void sendQuitMessage()
     {
         PostQuitMessage(0);
+    }
+
+    uint32_t memoryPageSize()
+    {
+        SYSTEM_INFO systemInfo;
+        GetSystemInfo(&systemInfo);
+
+        return systemInfo.dwPageSize;
+    }
+
+    void *reserveMemoryPage()
+    {
+        LPVOID address = VirtualAlloc(NULL, memoryPageSize(), MEM_RESERVE, PAGE_READWRITE);
+        assert(address != NULL);
+        return address;
+    }
+
+    void commitMemoryPage(void *page)
+    {
+        VirtualAlloc(page, memoryPageSize(), MEM_COMMIT, PAGE_READWRITE);
+    }
+
+    void decommitMemoryPage(void *page)
+    {
+        BOOL result = VirtualFree(page, memoryPageSize(), MEM_DECOMMIT);
+        assert(result == TRUE);
+    }
+
+    void freeMemoryPage(void *page)
+    {
+        BOOL result = VirtualFree(page, memoryPageSize(), MEM_RELEASE);
+        assert(result == TRUE);
     }
 } // namespace IB
 
