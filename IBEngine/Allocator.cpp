@@ -15,14 +15,20 @@ namespace
     // (BlockCount)(1/8 + BlockSize) = PageSize
     // BlockCount = PageSize*8/(1 + 8*BlockSize)
 
-    // First page is a table for the other pages
-    // The first set of PageCount bits is to determine if a page is fully allocated or not
-    // The remaining memory is a table of pointers to those pages.
-    // MaxPageCount / 8 + MaxPageCount * 8 = PageSize
-    // MaxPageCount(1/8+8) = PageSize
-    // MaxPageCount = PageSize*8/65
+    struct PageTable
+    {
+        void *Header = nullptr;
+        void *MemoryPages = nullptr;
+    };
 
-    void *SmallMemoryPageTables[SmallMemoryBoundary] = {};
+    struct PageRange
+    {
+        uintptr_t Start;
+        uintptr_t End;
+    };
+
+    PageTable SmallMemoryPageTables[SmallMemoryBoundary] = {};
+    PageRange SmallMemoryPageRanges[SmallMemoryBoundary] = {};
 
     bool areAllSlotsSet(void *memory, uint64_t bitCount)
     {
@@ -137,30 +143,29 @@ namespace IB
 
             size_t tableIndex = blockSize - 1;
             // If our table hasn't been initialized, allocate a page for it
-            if (SmallMemoryPageTables[tableIndex] == nullptr)
+            if (SmallMemoryPageTables[tableIndex].MemoryPages == nullptr)
             {
-                SmallMemoryPageTables[tableIndex] = IB::reserveMemoryPages(1);
+                SmallMemoryPageTables[tableIndex].Header = IB::reserveMemoryPages(1);
+                IB::commitMemoryPages(SmallMemoryPageTables[tableIndex].Header, 1);
+
+                SmallMemoryPageTables[tableIndex].MemoryPages = IB::reserveMemoryPages(IB::memoryPageSize() * 8);
+
+                uintptr_t start = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex].MemoryPages);
+                uintptr_t end = start + IB::memoryPageSize() * 8 * IB::memoryPageSize();
+                SmallMemoryPageRanges[tableIndex] = PageRange{ start, end };
             }
-            IB::commitMemoryPages(SmallMemoryPageTables[tableIndex], 1);
 
             // Find our free page address
             void *page;
-            uint64_t pageCount = (IB::memoryPageSize() * 8) / 65;
-            uint64_t pageIndex = findClearedSlot(SmallMemoryPageTables[tableIndex], pageCount);
+            uint64_t pageCount = (IB::memoryPageSize() * 8);
+            uint64_t pageIndex = findClearedSlot(SmallMemoryPageTables[tableIndex].Header, pageCount);
             assert(pageIndex != NoSlot); // We're out of memory pages for this size class! Improve this algorithm to support the use case.
 
             {
-                uintptr_t pageAddress = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex]);
-                pageAddress += pageAddress + IB::memoryPageSize() - pageCount + pageIndex;
-
-                void **pagePointer = reinterpret_cast<void **>(pageAddress);
-                if (*pagePointer == nullptr)
-                {
-                    *pagePointer = IB::reserveMemoryPages(1);
-                }
-                IB::commitMemoryPages(*pagePointer, 1);
-
-                page = *pagePointer;
+                uintptr_t pageAddress = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex].MemoryPages);
+                pageAddress += pageAddress + IB::memoryPageSize() * pageIndex;
+                page = reinterpret_cast<void*>(pageAddress);
+                IB::commitMemoryPages(page, 1);
             }
 
             // Find our memory address
@@ -173,7 +178,7 @@ namespace IB
                 setSlot(page, freeSlot);
                 if (areAllSlotsSet(page, blockCount))
                 {
-                    setSlot(SmallMemoryPageTables[tableIndex], pageIndex);
+                    setSlot(SmallMemoryPageTables[tableIndex].Header, pageIndex);
                 }
 
                 memory = getPageSlot(page, blockSize, blockCount, freeSlot);
@@ -188,8 +193,22 @@ namespace IB
 
     void memoryFree(void *memory)
     {
-        (void)memory;
-        // TODO: How do we determine what page we live in?
+        uintptr_t memoryAddress = reinterpret_cast<uintptr_t>(memory);
+        uint32_t memoryPageIndex = SmallMemoryBoundary;
+        for (uint32_t i = 0; i < SmallMemoryBoundary; i++)
+        {
+            if (memoryAddress >= SmallMemoryPageRanges[i].Start && memoryAddress < SmallMemoryPageRanges[i].End)
+            {
+                memoryPageIndex = i;
+                break;
+            }
+        }
+
+        // Small memory allocation
+        if (memoryPageIndex != SmallMemoryBoundary)
+        {
+
+        }
     }
 
 } // namespace IB
