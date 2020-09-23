@@ -139,27 +139,27 @@ namespace IB
         return systemInfo.dwPageSize;
     }
 
-    void *reserveMemoryPage()
+    void *reserveMemoryPages(uint32_t pageCount)
     {
-        LPVOID address = VirtualAlloc(NULL, memoryPageSize(), MEM_RESERVE, PAGE_READWRITE);
+        LPVOID address = VirtualAlloc(NULL, memoryPageSize() * pageCount, MEM_RESERVE, PAGE_READWRITE);
         assert(address != NULL);
         return address;
     }
 
-    void commitMemoryPage(void *page)
+    void commitMemoryPages(void *pages, uint32_t pageCount)
     {
-        VirtualAlloc(page, memoryPageSize(), MEM_COMMIT, PAGE_READWRITE);
+        VirtualAlloc(pages, memoryPageSize() * pageCount, MEM_COMMIT, PAGE_READWRITE);
     }
 
-    void decommitMemoryPage(void *page)
+    void decommitMemoryPages(void *pages, uint32_t pageCount)
     {
-        BOOL result = VirtualFree(page, memoryPageSize(), MEM_DECOMMIT);
+        BOOL result = VirtualFree(page, memoryPageSize() * pageCount, MEM_DECOMMIT);
         assert(result == TRUE);
     }
 
-    void freeMemoryPage(void *page)
+    void freeMemoryPages(void *pages, uint32_t pageCount)
     {
-        BOOL result = VirtualFree(page, memoryPageSize(), MEM_RELEASE);
+        BOOL result = VirtualFree(page, memoryPageSize() * pageCount, MEM_RELEASE);
         assert(result == TRUE);
     }
 } // namespace IB

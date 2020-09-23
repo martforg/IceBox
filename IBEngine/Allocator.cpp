@@ -5,49 +5,52 @@
 namespace
 {
     constexpr uint32_t SmallMemoryBoundary = 512;
-    constexpr uint32_t SmallMemoryPageCount = SmallMemoryBoundary / 4 + 2; // Multiples of 4 + 1 byte and 2 bytes
     constexpr uint64_t NoSlot = 0xFFFFFFFFFFFFFFFF;
-    constexpr uint64_t HeaderSize = 8;
-    static_assert(HeaderSize == sizeof(uintptr_t));
 
-    // Pages are stored in this format:
-    // Pointer To Next Page
-    // Allocation Bits
-    // Data Block Memory
+    // TODO: Document approach
 
-    // BlockCount * 1/8 + BlockCount * BlockSize = PageSize - HeaderSize
-    // (BlockCount)(1/8 + BlockSize) = PageSize - HeaderSize
-    // BlockCount = (PageSize - HeaderSize)*8/(1 + 8*BlockSize)
-    void* SmallMemoryPages[SmallMemoryPageCount] = {};
+    // BlockCount * 1/8 + BlockCount * BlockSize = PageSize
+    // (BlockCount)(1/8 + BlockSize) = PageSize
+    // BlockCount = PageSize*8/(1 + 8*BlockSize)
 
-    uint32_t getMemoryIndex(size_t size)
+    // First page is a table for the other pages
+    // The first set of PageCount bits is to determine if a page is fully allocated or not
+    // The remaining memory is a table of pointers to those pages.
+    // MaxPageCount / 8 + MaxPageCount * 8 = PageSize
+    // MaxPageCount(1/8+8) = PageSize
+    // MaxPageCount = PageSize*8/65
+
+    void *SmallMemoryPageTables[SmallMemoryBoundary] = {};
+
+    bool areAllSlotsSet(void *memory, uint32_t bitCount)
     {
-        if (size < 4)
+        bool fullyAllocated = true;
+
+        uint64_t *memoryIter = reinterpret_cast<uint64_t>(memory);
+        for (; static_cast<int32_t>(bitCount) > 0; memoryIter++, bitCount -= 64)
         {
-            assert(size == 1 || size == 2);
-            return size - 1;
+            uint64_t value = *memoryIter;
+            uint64_t testBitMask = ~(0xFFFFFFFFFFFFFFFF << (bitCount < 64 ? (bitCount % 64) : 0)); // Create a bitmask of all the bits we want to test
+            if ((value & testBitMask) != testBitMask)                                              // If any of our bits were cleared
+            {
+                fullyAllocated = false;
+                break;
+            }
         }
-        else
-        {
-            // Index is size / 4 + 1 if mod 3 != 0 + 1 to get up to index 2 (0, 1 taken by 1 and 2 byte allocs)
-            return (size >> 2) + ((size & 3) > 0 ? 1 : 0) + 1;
-        }
+
+        return fullyAllocated;
     }
 
-    uint64_t findFreeSlot(void* page, size_t blockSize)
+    uint64_t findClearedSlot(void *memory, uint32_t bitCount)
     {
         uint64_t freeSlot = NoSlot;
 
-        uint64_t* pageIter = reinterpret_cast<uint64_t*>(page);
-        pageIter++; // Ignore our header pointer
-
-        uint32_t blockCount = ((IB::memoryPageSize() - HeaderSize) >> 3) / (1 + (blockSize >> 3));
-        uint64_t pageEnd = pageIter + (blockCount >> 6);
-        for (; pageIter != pageEnd; pagerIter++)
+        uint64_t *memoryIter = reinterpret_cast<uint64_t *>(memory);
+        for (; static_cast<int32_t>(bitCount) > 0; memoryIter++, bitCount -= 64)
         {
-            uint64_t value = *pageIter;
-            uint64_t testBitMask = ~(0xFFFFFFFFFFFFFFFF << (blockCount & 63)); // Create a bitmask of all the bits we want to test
-            if ((value & testBitMask) != testBitMask) // If any of our bits were cleared
+            uint64_t value = *memoryIter;
+            uint64_t testBitMask = ~(0xFFFFFFFFFFFFFFFF << (bitCount < 64 ? (bitCount % 64) : 0)); // Create a bitmask of all the bits we want to test
+            if ((value & testBitMask) != testBitMask)                                              // If any of our bits were cleared
             {
                 // Mask out all our set bits and the first non-set bit
                 // (0010 + 1) ^ 0010 = 0011 ^ 0010 = 0001
@@ -70,39 +73,51 @@ namespace
                 // Then we add up the quads in octets
                 // 00100010
                 // 00000100 = 4
-                value = ((value >> 1)  & 0x5555555555555555) + (value & 0x5555555555555555);
-                value = ((value >> 2)  & 0x3333333333333333) + (value & 0x3333333333333333);
-                value = ((value >> 4)  & 0x0F0F0F0F0F0F0F0F) + (value & 0x0F0F0F0F0F0F0F0F);
-                value = ((value >> 8)  & 0x00FF00FF00FF00FF) + (value & 0x00FF00FF00FF00FF);
+                value = ((value >> 1) & 0x5555555555555555) + (value & 0x5555555555555555);
+                value = ((value >> 2) & 0x3333333333333333) + (value & 0x3333333333333333);
+                value = ((value >> 4) & 0x0F0F0F0F0F0F0F0F) + (value & 0x0F0F0F0F0F0F0F0F);
+                value = ((value >> 8) & 0x00FF00FF00FF00FF) + (value & 0x00FF00FF00FF00FF);
                 value = ((value >> 16) & 0x0000FFFF0000FFFF) + (value & 0x0000FFFF0000FFFF);
                 value = ((value >> 32) & 0x00000000FFFFFFFF) + (value & 0x00000000FFFFFFFF);
 
                 freeSlot = value - 1;
+                break;
             }
         }
 
         return freeSlot;
     }
 
-    void* getSlotMemory(void* page, size_t blockSize, uint64_t slotIndex)
+    void setSlot(void *memory, uint64_t bitCount, uint64_t index)
     {
-        uint32_t blockCount = ((IB::memoryPageSize() - HeaderSize) >> 3) / (1 + (blockSize >> 3));
+        uint64_t *memoryIter = reinterpret_cast<uint64_t *>(memory);
+        memoryIter = memoryIter + index / 64;
+        *memoryIter |= 1ull << (index % 64);
+    }
+
+    void *getPageSlot(void *page, size_t blockSize, uint64_t blockCount, uint64_t slotIndex)
+    {
         uintptr_t pageIter = reinterpret_cast<uintptr_t>(page);
-        pageIter += HeaderSize + blockCount * blockSize;
+        pageIter += blockCount / 8 + (blockCount % 8 > 0 ? 1 : 0);
+
+        // Make sure we're aligned
         pageIter = pageIter + ((pageIter % blockSize) > 0 ? (blockSize - pageIter % blockSize) : 0);
+        pageIter = pageIter + slotIndex * blockSize;
 
         assert(pageIter < reinterpret_cast<uintptr_t>(page) + IB::memoryPageSize());
-        return reinterpret_cast<void*>(pageIter);
+        return reinterpret_cast<void *>(pageIter);
     }
-}
+} // namespace
 
 namespace IB
 {
     void *memoryAllocate(size_t size, size_t alignment)
     {
         assert(size != 0);
-        if (size < SmallMemoryBoundary && alignment < SmallMemoryBoundary)
+        if (size <= SmallMemoryBoundary && alignment <= SmallMemoryBoundary)
         {
+            // If blockSize is larger than size, then we have internal fragmentation.
+            // TODO: Log internal fragmentation
             size_t blockSize = size;
             if (size != alignment && size % alignment == 0)
             {
@@ -115,46 +130,59 @@ namespace IB
                     blockSize = alignment;
                 }
             }
+            assert(blockSize <= SmallMemoryBoundary);
 
-            // If blockSize is larger than size, then we have internal fragmentation.
-            // TODO: Log internal fragmentation
-            uint32_t pageIndex = getMemoryIndex(blockSize);
-            if (SmallMemoryPages[pageIndex] == nullptr)
+            uint32_t tableIndex = blockSize - 1;
+            // If our table hasn't been initialized, allocate a page for it
+            if (SmallMemoryPageTables[tableIndex] == nullptr)
             {
-                SmallMemoryPages[pageIndex] = IB::reserveMemoryPage();
-                IB::commitMemoryPage(SmallMemoryPages[pageIndex]);
+                SmallMemoryPageTables[tableIndex] = IB::reserveMemoryPages(1);
+            }
+            IB::commitMemoryPages(SmallMemoryPageTables[tableIndex], 1);
+
+            // Find our free page address
+            void *page;
+            uint32_t pageCount = (IB::memoryPageSize() * 8) / 65;
+            uint64_t pageIndex = findClearedSlot(SmallMemoryPageTables[tableIndex], pageCount);
+            assert(pageIndex != NoSlot);
+
+            {
+                uintptr_t pageAddress = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex]);
+                pageAddress += pageAddress + IB::memoryPageSize() - pageCount + freeSlot;
+
+                void **pagePointer = reinterpret_cast<void **>(pageAddress);
+                if (*pagePointer == nullptr)
+                {
+                    *pagePointer = IB::reserveMemoryPages(1);
+                }
+                IB::commitMemoryPages(*pagePointer, 1);
+
+                page = *pagePointer;
             }
 
-            // TODO: If we find that we spend a lot of time here. We can make sure that pages with
-            // free memory are bumped to the front of the list.
-            // TODO: We can also store our pointer chain in an auxiliary table instead of getting the pointers from each page.
-            void* page = SmallMemoryPages[pageIndex];
-            uint64_t freeSlot = findFreeSlot(page, blockSize);
-            while (freeSlot == NoSlot)
+            // Find our memory address
+            void *memory;
             {
-                void** nextPage = reinterpret_cast<void**>(page);
-                if (*nextPage == nullptr)
+                uint32_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize / 8);
+                uint64_t freeSlot = findClearedSlot(page, blockCount);
+                assert(freeSlot != NoSlot); // Our page's "fully allocated" bit was cleared.
+
+                setSlot(page, blockCount, freeSlot);
+                if (areAllSlotsSet(page, blockCount))
                 {
-                    *nextPage = IB::reserveMemoryPage();
-                    IB::commitMemoryPage(*nextPage);
-                    freeSlot = 0;
-                    page = *nextPage;
+                    setSlot(SmallMemoryPageTables[tableIndex], pageCount, pageIndex);
                 }
-                else
-                {
-                    // Try the next page
-                    page = *nextPage;
-                    freeSlot = findFreeSlot(page, blockSize);
-                }
+
+                memory = getPageSlot(page, blockSize, blockCount, freeSlot);
             }
 
-            return getSlotMemory(page, blockSize, freeSlot);
+            return memory;
         }
     }
 
     void memoryFree(void *memory)
     {
-
+        // TODO: How do we determine what page we live in?
     }
 
 } // namespace IB
