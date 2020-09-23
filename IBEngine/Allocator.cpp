@@ -1,5 +1,7 @@
 #include "Allocator.h"
 
+#include "Platform/IBPlatform.h"
+
 #include <assert.h>
 
 namespace
@@ -22,11 +24,11 @@ namespace
 
     void *SmallMemoryPageTables[SmallMemoryBoundary] = {};
 
-    bool areAllSlotsSet(void *memory, uint32_t bitCount)
+    bool areAllSlotsSet(void *memory, uint64_t bitCount)
     {
         bool fullyAllocated = true;
 
-        uint64_t *memoryIter = reinterpret_cast<uint64_t>(memory);
+        uint64_t *memoryIter = reinterpret_cast<uint64_t*>(memory);
         for (; static_cast<int32_t>(bitCount) > 0; memoryIter++, bitCount -= 64)
         {
             uint64_t value = *memoryIter;
@@ -41,7 +43,7 @@ namespace
         return fullyAllocated;
     }
 
-    uint64_t findClearedSlot(void *memory, uint32_t bitCount)
+    uint64_t findClearedSlot(void *memory, uint64_t bitCount)
     {
         uint64_t freeSlot = NoSlot;
 
@@ -80,7 +82,8 @@ namespace
                 value = ((value >> 16) & 0x0000FFFF0000FFFF) + (value & 0x0000FFFF0000FFFF);
                 value = ((value >> 32) & 0x00000000FFFFFFFF) + (value & 0x00000000FFFFFFFF);
 
-                freeSlot = value - 1;
+                ptrdiff_t chunkIndex = (memoryIter - reinterpret_cast<uint64_t*>(memory));
+                freeSlot = chunkIndex * 64 + value - 1;
                 break;
             }
         }
@@ -88,7 +91,7 @@ namespace
         return freeSlot;
     }
 
-    void setSlot(void *memory, uint64_t bitCount, uint64_t index)
+    void setSlot(void *memory, uint64_t index)
     {
         uint64_t *memoryIter = reinterpret_cast<uint64_t *>(memory);
         memoryIter = memoryIter + index / 64;
@@ -132,7 +135,7 @@ namespace IB
             }
             assert(blockSize <= SmallMemoryBoundary);
 
-            uint32_t tableIndex = blockSize - 1;
+            size_t tableIndex = blockSize - 1;
             // If our table hasn't been initialized, allocate a page for it
             if (SmallMemoryPageTables[tableIndex] == nullptr)
             {
@@ -142,13 +145,13 @@ namespace IB
 
             // Find our free page address
             void *page;
-            uint32_t pageCount = (IB::memoryPageSize() * 8) / 65;
+            uint64_t pageCount = (IB::memoryPageSize() * 8) / 65;
             uint64_t pageIndex = findClearedSlot(SmallMemoryPageTables[tableIndex], pageCount);
-            assert(pageIndex != NoSlot);
+            assert(pageIndex != NoSlot); // We're out of memory pages for this size class! Improve this algorithm to support the use case.
 
             {
                 uintptr_t pageAddress = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex]);
-                pageAddress += pageAddress + IB::memoryPageSize() - pageCount + freeSlot;
+                pageAddress += pageAddress + IB::memoryPageSize() - pageCount + pageIndex;
 
                 void **pagePointer = reinterpret_cast<void **>(pageAddress);
                 if (*pagePointer == nullptr)
@@ -163,14 +166,14 @@ namespace IB
             // Find our memory address
             void *memory;
             {
-                uint32_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize / 8);
+                uint64_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize / 8);
                 uint64_t freeSlot = findClearedSlot(page, blockCount);
                 assert(freeSlot != NoSlot); // Our page's "fully allocated" bit was cleared.
 
-                setSlot(page, blockCount, freeSlot);
+                setSlot(page, freeSlot);
                 if (areAllSlotsSet(page, blockCount))
                 {
-                    setSlot(SmallMemoryPageTables[tableIndex], pageCount, pageIndex);
+                    setSlot(SmallMemoryPageTables[tableIndex], pageIndex);
                 }
 
                 memory = getPageSlot(page, blockSize, blockCount, freeSlot);
@@ -178,10 +181,14 @@ namespace IB
 
             return memory;
         }
+
+        // TODO: Large memory allocation
+        return nullptr;
     }
 
     void memoryFree(void *memory)
     {
+        (void)memory;
         // TODO: How do we determine what page we live in?
     }
 

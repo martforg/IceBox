@@ -153,13 +153,13 @@ namespace IB
 
     void decommitMemoryPages(void *pages, uint32_t pageCount)
     {
-        BOOL result = VirtualFree(page, memoryPageSize() * pageCount, MEM_DECOMMIT);
+        BOOL result = VirtualFree(pages, memoryPageSize() * pageCount, MEM_DECOMMIT);
         assert(result == TRUE);
     }
 
     void freeMemoryPages(void *pages, uint32_t pageCount)
     {
-        BOOL result = VirtualFree(page, memoryPageSize() * pageCount, MEM_RELEASE);
+        BOOL result = VirtualFree(pages, memoryPageSize() * pageCount, MEM_RELEASE);
         assert(result == TRUE);
     }
 } // namespace IB
