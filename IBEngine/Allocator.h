@@ -6,6 +6,6 @@
 
 namespace IB
 {
-    void *memoryAllocate(size_t size, size_t alignment);
-    void memoryFree(void *memory);
+    IB_API void *memoryAllocate(size_t size, size_t alignment);
+    IB_API void memoryFree(void *memory);
 } // namespace IB

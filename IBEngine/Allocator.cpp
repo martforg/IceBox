@@ -34,11 +34,11 @@ namespace
     {
         bool fullyAllocated = true;
 
-        uint64_t *memoryIter = reinterpret_cast<uint64_t*>(memory);
+        uint64_t *memoryIter = reinterpret_cast<uint64_t *>(memory);
         for (; static_cast<int32_t>(bitCount) > 0; memoryIter++, bitCount -= 64)
         {
             uint64_t value = *memoryIter;
-            uint64_t testBitMask = ~(0xFFFFFFFFFFFFFFFF << (bitCount < 64 ? (bitCount % 64) : 0)); // Create a bitmask of all the bits we want to test
+            uint64_t testBitMask = ~(bitCount < 64 ? (0xFFFFFFFFFFFFFFFF << (bitCount % 64)) : 0); // Create a bitmask of all the bits we want to test
             if ((value & testBitMask) != testBitMask)                                              // If any of our bits were cleared
             {
                 fullyAllocated = false;
@@ -57,7 +57,7 @@ namespace
         for (; static_cast<int32_t>(bitCount) > 0; memoryIter++, bitCount -= 64)
         {
             uint64_t value = *memoryIter;
-            uint64_t testBitMask = ~(0xFFFFFFFFFFFFFFFF << (bitCount < 64 ? (bitCount % 64) : 0)); // Create a bitmask of all the bits we want to test
+            uint64_t testBitMask = ~(bitCount < 64 ? (0xFFFFFFFFFFFFFFFF << (bitCount % 64)) : 0); // Create a bitmask of all the bits we want to test
             if ((value & testBitMask) != testBitMask)                                              // If any of our bits were cleared
             {
                 // Mask out all our set bits and the first non-set bit
@@ -88,7 +88,7 @@ namespace
                 value = ((value >> 16) & 0x0000FFFF0000FFFF) + (value & 0x0000FFFF0000FFFF);
                 value = ((value >> 32) & 0x00000000FFFFFFFF) + (value & 0x00000000FFFFFFFF);
 
-                ptrdiff_t chunkIndex = (memoryIter - reinterpret_cast<uint64_t*>(memory));
+                ptrdiff_t chunkIndex = (memoryIter - reinterpret_cast<uint64_t *>(memory));
                 freeSlot = chunkIndex * 64 + value - 1;
                 break;
             }
@@ -104,14 +104,21 @@ namespace
         *memoryIter |= 1ull << (index % 64);
     }
 
+    void clearSlot(void* memory, uint64_t index)
+    {
+        uint64_t *memoryIter = reinterpret_cast<uint64_t *>(memory);
+        memoryIter = memoryIter + index / 64;
+        *memoryIter &= ~(1ull << (index % 64));
+    }
+
     void *getPageSlot(void *page, size_t blockSize, uint64_t blockCount, uint64_t slotIndex)
     {
         uintptr_t pageIter = reinterpret_cast<uintptr_t>(page);
         pageIter += blockCount / 8 + (blockCount % 8 > 0 ? 1 : 0);
 
         // Make sure we're aligned
-        pageIter = pageIter + ((pageIter % blockSize) > 0 ? (blockSize - pageIter % blockSize) : 0);
-        pageIter = pageIter + slotIndex * blockSize;
+        uintptr_t firstSlot = pageIter + ((pageIter % blockSize) > 0 ? (blockSize - pageIter % blockSize) : 0);
+        pageIter = firstSlot + slotIndex * blockSize;
 
         assert(pageIter < reinterpret_cast<uintptr_t>(page) + IB::memoryPageSize());
         return reinterpret_cast<void *>(pageIter);
@@ -128,7 +135,7 @@ namespace IB
             // If blockSize is larger than size, then we have internal fragmentation.
             // TODO: Log internal fragmentation
             size_t blockSize = size;
-            if (size != alignment && size % alignment == 0)
+            if (size != alignment && size % alignment != 0)
             {
                 if (size > alignment)
                 {
@@ -152,7 +159,7 @@ namespace IB
 
                 uintptr_t start = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex].MemoryPages);
                 uintptr_t end = start + IB::memoryPageSize() * 8 * IB::memoryPageSize();
-                SmallMemoryPageRanges[tableIndex] = PageRange{ start, end };
+                SmallMemoryPageRanges[tableIndex] = PageRange{start, end};
             }
 
             // Find our free page address
@@ -163,15 +170,15 @@ namespace IB
 
             {
                 uintptr_t pageAddress = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex].MemoryPages);
-                pageAddress += pageAddress + IB::memoryPageSize() * pageIndex;
-                page = reinterpret_cast<void*>(pageAddress);
+                pageAddress = pageAddress + IB::memoryPageSize() * pageIndex;
+                page = reinterpret_cast<void *>(pageAddress);
                 IB::commitMemoryPages(page, 1);
             }
 
             // Find our memory address
             void *memory;
             {
-                uint64_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize / 8);
+                uint64_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize * 8);
                 uint64_t freeSlot = findClearedSlot(page, blockCount);
                 assert(freeSlot != NoSlot); // Our page's "fully allocated" bit was cleared.
 
@@ -207,7 +214,17 @@ namespace IB
         // Small memory allocation
         if (memoryPageIndex != SmallMemoryBoundary)
         {
+            size_t blockSize = memoryPageIndex + 1;
+            uint64_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize * 8);
 
+            ptrdiff_t offsetFromStart = memoryAddress - SmallMemoryPageRanges[memoryPageIndex].Start;
+            ptrdiff_t pageIndex = offsetFromStart / IB::memoryPageSize();
+
+            void *page = reinterpret_cast<void *>(SmallMemoryPageRanges[memoryPageIndex].Start + pageIndex * IB::memoryPageSize());
+            void *firstSlot = getPageSlot(page, blockSize, blockCount, 0);
+            uintptr_t indexInPage = (memoryAddress - reinterpret_cast<uintptr_t>(firstSlot)) / blockSize;
+            clearSlot(page, indexInPage);
+            clearSlot(SmallMemoryPageTables[memoryPageIndex].Header, pageIndex);
         }
     }
 

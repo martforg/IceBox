@@ -141,7 +141,7 @@ namespace IB
 
     void *reserveMemoryPages(uint32_t pageCount)
     {
-        LPVOID address = VirtualAlloc(NULL, memoryPageSize() * pageCount, MEM_RESERVE, PAGE_READWRITE);
+        LPVOID address = VirtualAlloc(NULL, memoryPageSize() * pageCount, MEM_RESERVE, PAGE_NOACCESS);
         assert(address != NULL);
         return address;
     }
