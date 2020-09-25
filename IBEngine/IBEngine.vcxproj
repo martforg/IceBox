@@ -11,12 +11,12 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Allocator.h" />
+    <ClInclude Include="IBAllocator.h" />
     <ClInclude Include="IBEngineAPI.h" />
     <ClInclude Include="Platform\IBPlatform.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Allocator.cpp" />
+    <ClCompile Include="IBAllocator.cpp" />
     <ClCompile Include="Platform\IBPlatformWin32.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

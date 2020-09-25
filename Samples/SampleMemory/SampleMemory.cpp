@@ -1,4 +1,4 @@
-#include <IBEngine/Allocator.h>
+#include <IBEngine/IBAllocator.h>
 #include <assert.h>
 
 int main()
