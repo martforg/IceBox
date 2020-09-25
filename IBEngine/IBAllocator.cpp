@@ -77,6 +77,39 @@ namespace
         return fullyFree;
     }
 
+    uint64_t firstClearedBitIndex(uint64_t value)
+    {
+        // Mask out all our set bits and the first non-set bit
+        // (0010 + 1) ^ 0010 = 0011 ^ 0010 = 0001
+        // (0011 + 1) ^ 0011 = 0100 ^ 0011 = 0111
+        // (1011 + 1) ^ 1011 = 1100 ^ 1011 = 0111
+        // (0111 + 1) ^ 0111 = 1000 ^ 0111 = 1111
+        value = value ^ (value + 1);
+
+        // At this point, the number of bits set is equal to the index of our first cleared bit + 1
+        // Calculate the number of set bits and subtract 1 to get it's index
+
+        // Count the number of set bits with a parallel add
+        // We first start with the first pair of bits
+        // 01 10 11 00
+        // We add up the pairs
+        // 01 01 10 00
+        // Then we add them up the pairs in a quad
+        // 0101 1000
+        // 0010 0010
+        // Then we add up the quads in octets
+        // 00100010
+        // 00000100 = 4
+        value = ((value >> 1) & 0x5555555555555555) + (value & 0x5555555555555555);
+        value = ((value >> 2) & 0x3333333333333333) + (value & 0x3333333333333333);
+        value = ((value >> 4) & 0x0F0F0F0F0F0F0F0F) + (value & 0x0F0F0F0F0F0F0F0F);
+        value = ((value >> 8) & 0x00FF00FF00FF00FF) + (value & 0x00FF00FF00FF00FF);
+        value = ((value >> 16) & 0x0000FFFF0000FFFF) + (value & 0x0000FFFF0000FFFF);
+        value = ((value >> 32) & 0x00000000FFFFFFFF) + (value & 0x00000000FFFFFFFF);
+
+        return value - 1;
+    }
+
     uint64_t findClearedSlot(void *memory, uint64_t bitCount)
     {
         uint64_t freeSlot = NoSlot;
@@ -88,36 +121,10 @@ namespace
             uint64_t testBitMask = ~(bitCount < 64 ? (0xFFFFFFFFFFFFFFFF << (bitCount % 64)) : 0); // Create a bitmask of all the bits we want to test
             if ((value & testBitMask) != testBitMask)                                              // If any of our bits were cleared
             {
-                // Mask out all our set bits and the first non-set bit
-                // (0010 + 1) ^ 0010 = 0011 ^ 0010 = 0001
-                // (0011 + 1) ^ 0011 = 0100 ^ 0011 = 0111
-                // (1011 + 1) ^ 1011 = 1100 ^ 1011 = 0111
-                // (0111 + 1) ^ 0111 = 1000 ^ 0111 = 1111
-                value = value ^ (value + 1);
-
-                // At this point, the number of bits set is equal to the index of our first cleared bit + 1
-                // Calculate the number of set bits and subtract 1 to get it's index
-
-                // Count the number of set bits with a parallel add
-                // We first start with the first pair of bits
-                // 01 10 11 00
-                // We add up the pairs
-                // 01 01 10 00
-                // Then we add them up the pairs in a quad
-                // 0101 1000
-                // 0010 0010
-                // Then we add up the quads in octets
-                // 00100010
-                // 00000100 = 4
-                value = ((value >> 1) & 0x5555555555555555) + (value & 0x5555555555555555);
-                value = ((value >> 2) & 0x3333333333333333) + (value & 0x3333333333333333);
-                value = ((value >> 4) & 0x0F0F0F0F0F0F0F0F) + (value & 0x0F0F0F0F0F0F0F0F);
-                value = ((value >> 8) & 0x00FF00FF00FF00FF) + (value & 0x00FF00FF00FF00FF);
-                value = ((value >> 16) & 0x0000FFFF0000FFFF) + (value & 0x0000FFFF0000FFFF);
-                value = ((value >> 32) & 0x00000000FFFFFFFF) + (value & 0x00000000FFFFFFFF);
+                uint64_t bitIndex = firstClearedBitIndex(value);
 
                 ptrdiff_t chunkIndex = (memoryIter - reinterpret_cast<uint64_t *>(memory));
-                freeSlot = chunkIndex * 64 + value - 1;
+                freeSlot = chunkIndex * 64 + bitIndex;
                 break;
             }
         }
@@ -272,6 +279,8 @@ namespace IB
                 if (BuddyChunks[i].Header == nullptr)
                 {
                     BuddyChunks[i].Header = IB::reserveMemoryPages(1);
+                    IB::commitMemoryPages(BuddyChunks[i].Header);
+
                     BuddyChunks[i].MemoryPages = IB::reserveMemoryPages(BuddyChunkSize / IB::memoryPageSize());
                 }
 
@@ -290,24 +299,34 @@ namespace IB
                 headerBits += levelOffset / 64;
                 levelOffset = levelOffset % 64;
 
-                // prologue
-                uint64_t buddyCountsMask = (buddyCounts > 64 ? 0xFFFFFFFFFFFFFFFF : (1ull << buddyCounts) - 1);
-                uint64_t buddyMask = buddyCountsMask << levelOffset;
-
-                uint64_t value = *headerBits;
-                if ((value & buddyMask) != buddyMask)
+                uint64_t freeSlot = NoSlot;
                 {
-                    // We found our value :D
-                }
-                else
-                {
+                    // prologue to get our bits aligned on a 64 bit boundary
+                    uint64_t buddyCountsMask = (buddyCounts > 64 ? 0xFFFFFFFFFFFFFFFF : (1ull << buddyCounts) - 1);
+                    uint64_t buddyMask = buddyCountsMask << levelOffset;
 
+                    uint64_t value = *headerBits;
+                    if ((value & buddyMask) != buddyMask)
+                    {
+                        freeSlot = firstClearedBitIndex(value);
+                    }
                 }
 
-                for (uint32_t i = 0; i < buddyCount; i++)
+                if (freeSlot == NoSlot)
                 {
-                    
+                    // We didn't find our value in the prologue
+                    // Look through the rest of our level
+                    freeSlot = findClearedSlot(headerBits + 1, buddyCounts - (64 - levelOffset));
                 }
+
+                if (freeSlot != NoSlot)
+                {
+                    // TODO: Allocate, we need to make sure to set the bits of our child indices
+                    // as well as our parent indices
+                    break;
+                }
+
+                // Continue looping if we didn't find a slot in this buddy chunk.
             }
         }
 
