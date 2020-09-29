@@ -1,4 +1,5 @@
 #include <IBEngine/IBAllocator.h>
+#include <IBEngine/Platform/IBPlatform.h>
 #include <assert.h>
 
 int main()
@@ -41,6 +42,40 @@ int main()
             for (uint32_t i = 0; i < 10000; i++)
             {
                 manySameSize[i] = IB::memoryAllocate(4, 4);
+            }
+
+            for (uint32_t i = 0; i < 10000; i++)
+            {
+                IB::memoryFree(manySameSize[i]);
+            }
+        }
+    }
+
+    // Medium allocations
+    {
+        void *allocations[10];
+
+        uint64_t allocationSize = 1024;
+        for (uint32_t i = 0; i < 10; i++)
+        {
+            allocations[i] = IB::memoryAllocate(allocationSize, 1024);
+            assert(reinterpret_cast<uintptr_t>(allocations[i]) % 1024 == 0);
+
+            allocationSize = allocationSize * 2;
+        }
+
+        for (uint32_t i = 0; i < 10; i++)
+        {
+            IB::memoryFree(allocations[i]);
+        }
+
+        // Allocate a lot of medium allocations
+        for (uint32_t loop = 0; loop < 10; loop++)
+        {
+            void *manySameSize[10000];
+            for (uint32_t i = 0; i < 10000; i++)
+            {
+                manySameSize[i] = IB::memoryAllocate(1024, 1024);
             }
 
             for (uint32_t i = 0; i < 10000; i++)

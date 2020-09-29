@@ -39,7 +39,7 @@ namespace IB
     IB_API void sendQuitMessage();
 
     // Allocation API
-    uint32_t memoryPageSize();
+    IB_API uint32_t memoryPageSize();
     IB_API void* reserveMemoryPages(uint32_t pageCount);
     // Commits reserved memory.
     IB_API void commitMemoryPages(void* pages, uint32_t pageCount);

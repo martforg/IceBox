@@ -23,19 +23,13 @@ namespace
         void *MemoryPages = nullptr;
     };
 
-    struct PageRange
-    {
-        uintptr_t Start;
-        uintptr_t End;
-    };
-
     // Make our memory thread local to support multi-threaded access to the page tables.
     // Note that this is not necessarily the best approach to making our memory allocation
     // but is definitely the easiest.
     // If problems arise in the future, we might want to re-examine how we can make the
     // allocator threadsafe.
     thread_local PageTable SmallMemoryPageTables[SmallMemoryBoundary] = {};
-    thread_local PageRange SmallMemoryPageRanges[SmallMemoryBoundary] = {};
+    const size_t SmallMemoryRange = IB::memoryPageSize() * 8 * IB::memoryPageSize();
 
     bool areAllSlotsSet(void *memory, uint64_t bitCount)
     {
@@ -161,6 +155,15 @@ namespace
 
     // Medium Memory Allocations
 
+    uint32_t log2(size_t value)
+    {
+        uint32_t pow2 = 0;
+        for (; value > 0; value = value >> 1, pow2++)
+        {
+        }
+        return pow2 - 1;
+    }
+
     // TODO: Document approach
 
     // Medium memory boundary is defined by how many blocks can be defined in a header
@@ -170,7 +173,7 @@ namespace
     // x x x x
     //  x   x
     //    x
-    // Now to determine how many blocks of 512 our hierarchy can hold, we need
+    // Now to determine how many blocks of 1024 our hierarchy can hold, we need
     // to determine how many allocation bits we need to allocate for our header.
     // Because the number of allocation bits required by a base number of digits is 2*n-1 (n+n/2+n/4+n/8+...)
     // we can see that
@@ -179,13 +182,16 @@ namespace
     // Solve for n
     // 4kb/2 = n
     // n=2048
-    // n*512 = 1048576 or 1MB
-    constexpr size_t MediumMemoryBoundary = 1024 * 1024 / 2;
-    // If ever our 1MB buddy chunks are too small and we're making too
+    // 4kb/2*1024
+    // 4kb*512
+    // If ever our buddy chunks are too small and we're making too
     // many large allocations, we could add a second level of buddy chunks with
-    // 1MB sized base blocks allowing us to have buddy chunks of up to 2GB
-    constexpr size_t BuddyChunkSize = 1024 * 1024; // 1MB buddy chunks
-    constexpr uint32_t BuddyChunkCount = 1024;     // At most 1GB of memory for medium allocations
+    // 2MB sized base blocks allowing us to have buddy chunks of up to 2GB
+    const size_t BuddyChunkSize = IB::memoryPageSize() * 512; // 1MB buddy chunks
+    const uint32_t BuddyLevelCount = log2(IB::memoryPageSize()) - 1;
+
+    const size_t MediumMemoryBoundary = BuddyChunkSize / 2;
+    constexpr uint32_t BuddyChunkCount = 1024; // At most 1GB of memory for medium allocations
 
     struct BuddyChunk
     {
@@ -193,15 +199,6 @@ namespace
         void *MemoryPages = nullptr;
     };
     BuddyChunk BuddyChunks[BuddyChunkCount] = {};
-
-    uint32_t log2(size_t value)
-    {
-        uint32_t pow2 = 0;
-        for (; value > 0; value = value >> 1, pow2++)
-        {
-        }
-        return pow2 - 1;
-    }
 
 } // namespace
 
@@ -235,10 +232,6 @@ namespace IB
                 IB::commitMemoryPages(SmallMemoryPageTables[tableIndex].Header, 1);
 
                 SmallMemoryPageTables[tableIndex].MemoryPages = IB::reserveMemoryPages(IB::memoryPageSize() * 8);
-
-                uintptr_t start = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[tableIndex].MemoryPages);
-                uintptr_t end = start + IB::memoryPageSize() * 8 * IB::memoryPageSize();
-                SmallMemoryPageRanges[tableIndex] = PageRange{start, end};
             }
 
             // Find our free page address
@@ -274,38 +267,39 @@ namespace IB
         }
         else if (blockSize <= MediumMemoryBoundary)
         {
-            for (uint32_t i = 0; i < BuddyChunkCount; i++)
+            for (uint32_t buddyChunkIndex = 0; buddyChunkIndex < BuddyChunkCount; buddyChunkIndex++)
             {
-                if (BuddyChunks[i].Header == nullptr)
+                if (BuddyChunks[buddyChunkIndex].Header == nullptr)
                 {
-                    BuddyChunks[i].Header = IB::reserveMemoryPages(1);
-                    IB::commitMemoryPages(BuddyChunks[i].Header);
+                    BuddyChunks[buddyChunkIndex].Header = IB::reserveMemoryPages(1);
+                    IB::commitMemoryPages(BuddyChunks[buddyChunkIndex].Header, 1);
 
-                    BuddyChunks[i].MemoryPages = IB::reserveMemoryPages(BuddyChunkSize / IB::memoryPageSize());
+                    BuddyChunks[buddyChunkIndex].MemoryPages = IB::reserveMemoryPages(static_cast<uint32_t>(BuddyChunkSize / IB::memoryPageSize()));
                 }
 
-                uint64_t *headerBits = reinterpret_cast<uint64_t *>(BuddyChunks[i].Header);
+                uint64_t *headerBits = reinterpret_cast<uint64_t *>(BuddyChunks[buddyChunkIndex].Header);
 
-                // Buddy level count is log2(memoryPageSize/2), use log2(memoryPageSize)-1 identity instead
-                uint32_t buddyLevelCount = log2(IB::memoryPageSize()) - 1;
-                uint32_t buddyLevel = buddyLevelCount - (log2(blockSize) - log2(SmallMemoryBoundary));
+                // Calculate our next largest power of 2 block
+                uint64_t buddySize = 1ull << log2(blockSize);
+
+                uint32_t buddyLevel = BuddyLevelCount - (log2(blockSize) - log2(SmallMemoryBoundary * 2));
                 // To get to our level bit, add all our previous levels
                 // Ex: For level 5 from the top
                 // 1+2+4+8 = 15
                 // So 2^level-1
-                uint32_t levelOffset = (1 << buddyLevel) - 1;
-                uint32_t buddyCounts = (1 << buddyLevel);
+                uint64_t levelOffset = (1ull << buddyLevel) - 1;
+                uint64_t buddyCounts = (1ull << buddyLevel);
 
-                headerBits += levelOffset / 64;
-                levelOffset = levelOffset % 64;
+                uint64_t *levelHeaderBits = headerBits + levelOffset / 64;
+                uint64_t levelBitOffset = levelOffset % 64;
 
                 uint64_t freeSlot = NoSlot;
                 {
                     // prologue to get our bits aligned on a 64 bit boundary
                     uint64_t buddyCountsMask = (buddyCounts > 64 ? 0xFFFFFFFFFFFFFFFF : (1ull << buddyCounts) - 1);
-                    uint64_t buddyMask = buddyCountsMask << levelOffset;
+                    uint64_t buddyMask = buddyCountsMask << levelBitOffset;
 
-                    uint64_t value = *headerBits;
+                    uint64_t value = *levelHeaderBits;
                     if ((value & buddyMask) != buddyMask)
                     {
                         freeSlot = firstClearedBitIndex(value);
@@ -316,14 +310,76 @@ namespace IB
                 {
                     // We didn't find our value in the prologue
                     // Look through the rest of our level
-                    freeSlot = findClearedSlot(headerBits + 1, buddyCounts - (64 - levelOffset));
+                    freeSlot = (64 - levelBitOffset) + findClearedSlot(levelHeaderBits + 1, buddyCounts - (64 - levelBitOffset));
                 }
 
                 if (freeSlot != NoSlot)
                 {
-                    // TODO: Allocate, we need to make sure to set the bits of our child indices
-                    // as well as our parent indices
-                    break;
+                    uint64_t slotOffset = levelOffset + freeSlot;
+                    uint64_t *slotBits = headerBits + slotOffset / 64;
+                    *slotBits = *slotBits | (1ull << (slotOffset % 64));
+
+                    uint8_t *memory = reinterpret_cast<uint8_t *>(BuddyChunks[buddyChunkIndex].MemoryPages);
+                    memory += freeSlot * buddySize;
+
+                    if (blockSize == IB::memoryPageSize())
+                    {
+                        IB::commitMemoryPages(memory, 1);
+                    }
+
+                    // This approach might be slow. Keep an eye on it.
+                    // Mark our parent bits as allocated
+                    uint64_t parentSlot = freeSlot;
+                    for (uint32_t i = buddyLevel; i > 0; i--)
+                    {
+                        parentSlot = parentSlot / 2;
+
+                        uint32_t parentLevel = i - 1;
+                        uint32_t parentLevelOffset = (1ull << parentLevel) - 1;
+
+                        uint64_t parentSlotOffset = parentLevelOffset + parentSlot;
+                        uint64_t *parentLevelBits = headerBits + parentSlotOffset / 64;
+
+                        *parentLevelBits = *parentLevelBits | (1ull << (parentSlotOffset % 64));
+
+                        size_t parentBlockSize = 1ull << ((BuddyLevelCount - parentLevel) + log2(SmallMemoryBoundary * 2));
+                        if (parentBlockSize == IB::memoryPageSize())
+                        {
+                            uint8_t *parentMemory = reinterpret_cast<uint8_t *>(BuddyChunks[buddyChunkIndex].MemoryPages);
+                            parentMemory += parentSlot * parentBlockSize;
+                            IB::commitMemoryPages(parentMemory, IB::memoryPageSize());
+                        }
+                    }
+
+                    // Mark our child bits as allocated
+                    uint64_t childSlot = freeSlot;
+                    uint64_t childBitCount = 1;
+                    for (uint32_t i = buddyLevel + 1; i <= BuddyLevelCount; i++)
+                    {
+                        childSlot = childSlot * 2;
+                        childBitCount = childBitCount * 2;
+
+                        uint64_t childLevel = i;
+                        uint64_t childLevelOffset = (1ull << childLevel) - 1;
+
+                        for (uint32_t childIndex = 0; childIndex < childBitCount; childIndex++)
+                        {
+                            uint64_t childSlotOffset = childLevelOffset + childSlot + childIndex;
+                            uint64_t *childLevelBits = headerBits + childSlotOffset / 64;
+
+                            *childLevelBits = *childLevelBits | (1ull << (childSlotOffset % 64));
+
+                            size_t childBlockSize = 1ull << ((BuddyLevelCount - childLevel) + log2(SmallMemoryBoundary * 2));
+                            if (childBlockSize == IB::memoryPageSize())
+                            {
+                                uint8_t *childMemory = reinterpret_cast<uint8_t *>(BuddyChunks[buddyChunkIndex].MemoryPages);
+                                childMemory += childSlot * childBlockSize;
+                                IB::commitMemoryPages(childMemory, IB::memoryPageSize());
+                            }
+                        }
+                    }
+
+                    return memory;
                 }
 
                 // Continue looping if we didn't find a slot in this buddy chunk.
@@ -336,36 +392,169 @@ namespace IB
 
     void memoryFree(void *memory)
     {
-        uintptr_t memoryAddress = reinterpret_cast<uintptr_t>(memory);
-        uint32_t memoryPageIndex = SmallMemoryBoundary;
-        for (uint32_t i = 0; i < SmallMemoryBoundary; i++)
+        // Small memory allocations
         {
-            if (memoryAddress >= SmallMemoryPageRanges[i].Start && memoryAddress < SmallMemoryPageRanges[i].End)
+            uint32_t memoryPageIndex = UINT32_MAX;
+            for (uint32_t i = 0; i < SmallMemoryBoundary; i++)
             {
-                memoryPageIndex = i;
-                break;
+                uintptr_t memoryAddress = reinterpret_cast<uintptr_t>(memory);
+                uintptr_t memoryStart = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[i].MemoryPages);
+                uintptr_t memoryEnd = memoryStart + SmallMemoryRange;
+
+                if (memoryAddress >= memoryStart && memoryAddress < memoryEnd)
+                {
+                    memoryPageIndex = i;
+                    break;
+                }
+            }
+
+            // Small memory allocation
+            if (memoryPageIndex != UINT32_MAX)
+            {
+                size_t blockSize = memoryPageIndex + 1;
+                uint64_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize * 8);
+
+                uintptr_t memoryAddress = reinterpret_cast<uintptr_t>(memory);
+                uintptr_t pageStart = reinterpret_cast<uintptr_t>(SmallMemoryPageTables[memoryPageIndex].MemoryPages);
+
+                ptrdiff_t offsetFromStart = memoryAddress - pageStart;
+                ptrdiff_t pageIndex = offsetFromStart / IB::memoryPageSize();
+
+                void *page = reinterpret_cast<void *>(pageStart + pageIndex * IB::memoryPageSize());
+                void *firstSlot = getPageSlot(page, blockSize, blockCount, 0);
+                uintptr_t indexInPage = (memoryAddress - reinterpret_cast<uintptr_t>(firstSlot)) / blockSize;
+                clearSlot(page, indexInPage);
+                if (areAllSlotsClear(page, blockCount))
+                {
+                    IB::decommitMemoryPages(page, 1);
+                }
+
+                clearSlot(SmallMemoryPageTables[memoryPageIndex].Header, pageIndex);
+                return;
             }
         }
 
-        // Small memory allocation
-        if (memoryPageIndex != SmallMemoryBoundary)
+        // Medium memory allocation
         {
-            size_t blockSize = memoryPageIndex + 1;
-            uint64_t blockCount = (IB::memoryPageSize() * 8) / (1 + blockSize * 8);
-
-            ptrdiff_t offsetFromStart = memoryAddress - SmallMemoryPageRanges[memoryPageIndex].Start;
-            ptrdiff_t pageIndex = offsetFromStart / IB::memoryPageSize();
-
-            void *page = reinterpret_cast<void *>(SmallMemoryPageRanges[memoryPageIndex].Start + pageIndex * IB::memoryPageSize());
-            void *firstSlot = getPageSlot(page, blockSize, blockCount, 0);
-            uintptr_t indexInPage = (memoryAddress - reinterpret_cast<uintptr_t>(firstSlot)) / blockSize;
-            clearSlot(page, indexInPage);
-            if (areAllSlotsClear(page, blockCount))
+            uint32_t memoryPageIndex = UINT32_MAX;
+            for (uint32_t i = 0; i < BuddyChunkCount; i++)
             {
-                IB::decommitMemoryPages(page, 1);
+                uintptr_t memoryAddress = reinterpret_cast<uintptr_t>(memory);
+                uintptr_t memoryStart = reinterpret_cast<uintptr_t>(BuddyChunks[i].MemoryPages);
+                uintptr_t memoryEnd = memoryStart + BuddyChunkSize;
+
+                if (memoryAddress >= memoryStart && memoryAddress < memoryEnd)
+                {
+                    memoryPageIndex = i;
+                    break;
+                }
             }
 
-            clearSlot(SmallMemoryPageTables[memoryPageIndex].Header, pageIndex);
+            if (memoryPageIndex != UINT32_MAX)
+            {
+                uintptr_t memoryAddress = reinterpret_cast<uintptr_t>(memory);
+                uintptr_t pageStart = reinterpret_cast<uintptr_t>(BuddyChunks[memoryPageIndex].MemoryPages);
+
+                ptrdiff_t offsetFromStart = memoryAddress - pageStart;
+
+                // Find our smallest aligned block, that's our allocation size
+                // TODO: How do we find what size we've allocated?
+                size_t blockSize = SmallMemoryBoundary * 2;
+                for (; blockSize < MediumMemoryBoundary; blockSize = blockSize * 2)
+                {
+                    if (offsetFromStart % blockSize == 0)
+                    {
+                        break;
+                    }
+                }
+                assert(blockSize != MediumMemoryBoundary);
+
+                uint32_t buddyLevel = BuddyLevelCount - (log2(blockSize) - log2(SmallMemoryBoundary * 2));
+                uint64_t slotIndex = offsetFromStart / blockSize;
+                uint64_t levelOffset = (1ull << buddyLevel) - 1;
+
+                uint64_t *headerBits = reinterpret_cast<uint64_t *>(BuddyChunks[memoryPageIndex].Header);
+                uint64_t slotOffset = levelOffset + slotIndex;
+                uint64_t *slotBits = headerBits + slotOffset / 64;
+                *slotBits = *slotBits & ~(1ull << (slotOffset % 64));
+
+                if (blockSize == IB::memoryPageSize())
+                {
+                    IB::decommitMemoryPages(memory, 1);
+                }
+
+                // Mark our child bits as freed
+                uint64_t childSlot = slotIndex;
+                uint64_t childBitCount = 1;
+                for (uint32_t i = buddyLevel + 1; i < BuddyLevelCount; i++)
+                {
+                    childSlot = childSlot * 2;
+                    childBitCount = childBitCount * 2;
+
+                    uint64_t childLevel = i;
+                    uint64_t childLevelOffset = (1ull << childLevel) - 1;
+
+                    for (uint32_t childIndex = 0; childIndex < childBitCount; childIndex++)
+                    {
+                        uint64_t childSlotOffset = childLevelOffset + childSlot + childIndex;
+                        uint64_t *childLevelBits = headerBits + childSlotOffset / 64;
+
+                        *childLevelBits = *childLevelBits & ~(1ull << (childSlotOffset % 64));
+
+                        size_t childBlockSize = 1ull << ((BuddyLevelCount - childLevel) + log2(SmallMemoryBoundary * 2));
+                        if (childBlockSize == IB::memoryPageSize())
+                        {
+                            uint8_t *childMemory = reinterpret_cast<uint8_t *>(BuddyChunks[memoryPageIndex].MemoryPages);
+                            childMemory += childSlot * childBlockSize;
+                            IB::decommitMemoryPages(childMemory, IB::memoryPageSize());
+                        }
+                    }
+                }
+
+                // Mark our parent bits as freed
+                uint64_t currentSlot = slotIndex;
+                for (uint32_t i = buddyLevel; i > 0; i--)
+                {
+                    uint32_t buddySlot0 = currentSlot & ~1;
+                    uint32_t buddySlot1 = buddySlot0 + 1;
+
+                    uint64_t currentLevelOffset = (1ull << i) - 1;
+
+                    uint64_t buddySlotOffset0 = currentLevelOffset + buddySlot0;
+                    uint64_t *buddyLevelBits0 = headerBits + buddySlotOffset0 / 64;
+
+                    uint64_t buddySlotOffset1 = currentLevelOffset + buddySlot1;
+                    uint64_t *buddyLevelBits1 = headerBits + buddySlotOffset1 / 64;
+
+                    bool isAllocated0 = *buddyLevelBits0 & (1ull << (buddySlotOffset0 % 64));
+                    bool isAllocated1 = *buddyLevelBits1 & (1ull << (buddySlotOffset1 % 64));
+                    if (!isAllocated0 && !isAllocated1)
+                    {
+                        uint64_t parentSlot = currentSlot / 2;
+
+                        uint32_t parentLevel = i - 1;
+                        uint64_t parentLevelOffset = (1ull << parentLevel) - 1;
+
+                        uint64_t parentSlotOffset = parentLevelOffset + parentSlot;
+                        uint64_t *parentLevelBits = headerBits + parentSlotOffset / 64;
+
+                        *parentLevelBits = *parentLevelBits & ~(1ull << (parentSlotOffset % 64));
+                        size_t parentBlockSize = 1ull << ((BuddyLevelCount - parentLevel) + log2(SmallMemoryBoundary * 2));
+                        if (parentBlockSize == IB::memoryPageSize())
+                        {
+                            uint8_t *parentMemory = reinterpret_cast<uint8_t *>(BuddyChunks[memoryPageIndex].MemoryPages);
+                            parentMemory += parentSlot * parentBlockSize;
+                            IB::decommitMemoryPages(parentMemory, IB::memoryPageSize());
+                        }
+                    }
+                    else
+                    {
+                        break;
+                    }
+
+                    currentSlot = currentSlot / 2;
+                }
+            }
         }
     }
 

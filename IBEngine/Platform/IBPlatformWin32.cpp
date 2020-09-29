@@ -148,17 +148,23 @@ namespace IB
 
     void commitMemoryPages(void *pages, uint32_t pageCount)
     {
+        assert(reinterpret_cast<uintptr_t>(pages) % memoryPageSize() == 0);
+
         VirtualAlloc(pages, memoryPageSize() * pageCount, MEM_COMMIT, PAGE_READWRITE);
     }
 
     void decommitMemoryPages(void *pages, uint32_t pageCount)
     {
+        assert(reinterpret_cast<uintptr_t>(pages) % memoryPageSize() == 0);
+
         BOOL result = VirtualFree(pages, memoryPageSize() * pageCount, MEM_DECOMMIT);
         assert(result == TRUE);
     }
 
     void freeMemoryPages(void *pages, uint32_t pageCount)
     {
+        assert(reinterpret_cast<uintptr_t>(pages) % memoryPageSize() == 0);
+
         BOOL result = VirtualFree(pages, memoryPageSize() * pageCount, MEM_RELEASE);
         assert(result == TRUE);
     }
