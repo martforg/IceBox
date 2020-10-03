@@ -177,21 +177,22 @@ namespace
     // to determine how many allocation bits we need to allocate for our header.
     // Because the number of allocation bits required by a base number of digits is 2*n-1 (n+n/2+n/4+n/8+...)
     // we can see that
-    // 4kb=2*n-1
+    // PageSize*8=2*n-1
     // remove the -1, we don't mind if we're using up an extra bit and it keeps our math in powers of 2
     // Solve for n
-    // 4kb/2 = n
-    // n=2048
-    // 4kb/2*1024
-    // 4kb*512
+    // PageSize*8/2 = n
+    // n=PageSize/2*8
+    // We only want to allocate PageSize/2 number of blocks instead of PageSize*8/2 since we would have to traverse
+    // A whole page simply to mark our blocks as allocated. Instead we only traverse PageSize/8 (256 bytes for a 4kb page) bytes
+    
     // If ever our buddy chunks are too small and we're making too
-    // many large allocations, we could add a second level of buddy chunks with
-    // 2MB sized base blocks allowing us to have buddy chunks of up to 2GB
-    const size_t BuddyChunkSize = IB::memoryPageSize() * 512; // 1MB buddy chunks
+    // many large allocations, we could add a second hierarchy of buddy chunks
+    constexpr size_t SmallestBuddyChunkSize = SmallMemoryBoundary * 2;
+    const size_t BuddyChunkSize = IB::memoryPageSize() / 2 * SmallestBuddyChunkSize;
     const uint32_t BuddyLevelCount = log2(IB::memoryPageSize()) - 1;
 
-    const size_t MediumMemoryBoundary = BuddyChunkSize / 2;
-    constexpr uint32_t BuddyChunkCount = 1024; // At most 1GB of memory for medium allocations
+    const size_t MediumMemoryBoundary = BuddyChunkSize / 2; // We don't want to allocate a whole buddy chunk
+    constexpr uint32_t BuddyChunkCount = 1024; // arbitrary
 
     struct BuddyChunk
     {
