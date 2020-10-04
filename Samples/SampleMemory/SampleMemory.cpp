@@ -84,4 +84,7 @@ int main()
             }
         }
     }
+
+    void *largeAllocation = IB::memoryAllocate(1024 * 1024 * 1024, 1024);
+    IB::memoryFree(largeAllocation);
 }

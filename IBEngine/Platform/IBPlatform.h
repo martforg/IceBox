@@ -40,12 +40,16 @@ namespace IB
 
     // Allocation API
     IB_API uint32_t memoryPageSize();
-    IB_API void* reserveMemoryPages(uint32_t pageCount);
+    IB_API void *reserveMemoryPages(uint32_t pageCount);
     // Commits reserved memory.
-    IB_API void commitMemoryPages(void* pages, uint32_t pageCount);
+    IB_API void commitMemoryPages(void *pages, uint32_t pageCount);
     // Returns the page to reserve state.
-    IB_API void decommitMemoryPages(void* pages, uint32_t pageCount);
+    IB_API void decommitMemoryPages(void *pages, uint32_t pageCount);
     // Releases reserved memory.
-    IB_API void freeMemoryPages(void* pages, uint32_t pageCount);
+    IB_API void freeMemoryPages(void *pages, uint32_t pageCount);
+
+    // When requesting large blocks of memory, consider using a memory mapping
+    IB_API void *mapLargeMemoryBlock(size_t size);
+    IB_API void unmapLargeMemoryBlock(void *memory);
 
 } // namespace IB

@@ -18,7 +18,7 @@ namespace
     };
 
     constexpr uint32_t MaxActiveWindows = 10;
-    ActiveWindow ActiveWindows[MaxActiveWindows] = {};
+    thread_local ActiveWindow ActiveWindows[MaxActiveWindows] = {};
 
     LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
@@ -92,6 +92,15 @@ namespace
 
         return IB::WindowHandle{i};
     }
+
+    struct ActiveFileMapping
+    {
+        HANDLE Handle = NULL;
+        void *Mapping = nullptr;
+    };
+
+    constexpr uint32_t MaxFileMappingCount = 1024;
+    thread_local ActiveFileMapping ActiveFileMappings[MaxFileMappingCount];
 } // namespace
 
 namespace IB
@@ -167,6 +176,38 @@ namespace IB
 
         BOOL result = VirtualFree(pages, memoryPageSize() * pageCount, MEM_RELEASE);
         assert(result == TRUE);
+    }
+
+    IB_API void *mapLargeMemoryBlock(size_t size)
+    {
+        HANDLE fileMapping = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE | SEC_COMMIT, static_cast<DWORD>(size >> 32), static_cast<DWORD>(size & 0xFFFFFFFF), NULL);
+        void *map = MapViewOfFile(fileMapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+
+        for (uint32_t i = 0; i < MaxFileMappingCount; i++)
+        {
+            if (ActiveFileMappings[i].Handle == NULL)
+            {
+                ActiveFileMappings[i].Handle = fileMapping;
+                ActiveFileMappings[i].Mapping = map;
+                break;
+            }
+        }
+
+        return map;
+    }
+
+    IB_API void unmapLargeMemoryBlock(void *memory)
+    {
+        for (uint32_t i = 0; i < MaxFileMappingCount; i++)
+        {
+            if (ActiveFileMappings[i].Mapping == memory)
+            {
+                UnmapViewOfFile(memory);
+                CloseHandle(ActiveFileMappings[i].Handle);
+                ActiveFileMappings[i] = {};
+                break;
+            }
+        }
     }
 } // namespace IB
 
